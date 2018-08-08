@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="UTF-8">
+    <title>CryptoZombies front-end</title>
+    <script language="javascript" type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+    <!-- 包含Web3.js用来编写合约 -->
+    <script language="javascript" type="text/javascript" src="web3.min.js"></script>
+    <script language="javascript" type="text/javascript" src="cryptozombies_abi.js"></script>
+    </head>
+    <body>
+    <div id="txStatus"></div>
+    <div id="zombies"></div>
+
+    <script>
+
+        // 我们在调用一个只能合约时，需要告诉链：
+        // 1：智能合约的地址
+        // 2：希望调用的方法
+        // 3：传入的方法参数
+        // 但是以太链节点只能之别 JSON-RPC 语言，格式如下：
+        // {"jsonrpc":"2.0","method":"eth_sendTransaction","params":[{"from":"0xb60e8dd61c5d32be8058bb8eb970870f07233155",
+        //   "to":"0xd46e8dd67c5d32be8058bb8eb970870f07244567","gas":"0x76c0","gasPrice":"0x9184e72a000","value":"0x9184e72a",
+        //   "data":"0xd46e8dd67c5d32be8d46e8dd67c5d32be8058bb8eb970870f072445675058bb8eb970870f072445675"}],"id":1}
+        // 使用 web3.js 可以隐藏这些查询语句，将使函数如下：
+        // CryptoZombies.methods.createRandomZombie("Vitalik Nakamoto").
+        //   send({ from: "0xb60e8dd61c5d32be8058bb8eb970870f07233155", gas: "3000000" })
+
+        // web3.js要和合约对话，需要两部分：
+        // 1： 合约地址 2：ABI
+        // 其中ABI（应用二进制接口）是在进行合约部署时，solidity编译器生成的ABI
+
+        // Web3.js调用合约有两种方式，call 和 send
+        // call 用来调用view和pure函数，它运行在本地节点，不在区块链创建事务，不改变区块链状态，不消耗gas，不需要签名，无用户提示
+        //      myContract.methods.myMethod(123).call()
+        // send 要创建一个事务并改变区块链上的数据，可调用任何非view且非pure的函数。消耗Gas，需要签名，会有用户提示。
+        //      myContract.methods.myMethod(123).send()
+
+        // 合约调用都是异步返回的，所以要用then()的方式做promise。
+
+var cryptoZombies;
+var userAccount;
+
+function startApp() {
+    // 创建了合约的web3对象
+    var cryptoZombiesAddress = "YOUR_CONTRACT_ADDRESS";
+    cryptoZombies = new web3js.eth.Contract(cryptoZombiesABI, cryptoZombiesAddress);
+
+    var accountInterval = setInterval(function() {
+        // 时刻检查 Metamask 是否更换了账号 web3.eth.accounts[0] 表示当前被激活的账号
+        if (web3.eth.accounts[0] !== userAccount) {
+            userAccount = web3.eth.accounts[0];
+            // 若更换用户，刷新用户僵尸数据
+            getZombiesByOwner(userAccount)
+                .then(displayZombies);
+        }
+    }, 100);
+
+
+    // 使用webSocket来定于事件
+    var web3Infura = new Web3(new Web3.providers.WebsocketProvider("wss://mainnet.infura.io/ws"));
+    var czEvents = new web3Infura.eth.Contract(cryptoZombiesABI, cryptoZombiesAddress);
+
+    // 监听Transfer事件，并通过filter进行事件过滤
+    czEvents.events.Transfer({ filter: { _to: userAccount } })
+        .on("data", function(event) {
+            let data = event.returnValues;
+            getZombiesByOwner(userAccount).then(displayZombies);
+        }).on('error', console.error);
+}
+
+function displayZombies(ids) {
+    $("#zombies").empty();
+    for (id of ids) {
+        getZombieDetails(id)
+            .then(function(zombie) {
+                // 逐个添加僵尸细节div
+                $("#zombies").append(`<div class="zombie">
+              <ul>
+                <li>Name: ${zombie.name}</li>
+                <li>DNA: ${zombie.dna}</li>
+                <li>Level: ${zombie.level}</li>
+                <li>Wins: ${zombie.winCount}</li>
+                <li>Losses: ${zombie.lossCount}</li>
+                <li>Ready Time: ${zombie.readyTime}</li>
+              </ul>
+            </div>`);
+            });
+    }
+}
+
+function createRandomZombie(name) {
+    // 创建需要花费一段时间，需要给予用户等待提示
+    $("#txStatus").text("Creating new zombie on the blockchain. This may take a while...");
+    return cryptoZombies.methods.createRandomZombie(name)
+        .send({ from: userAccount })
+        .on("receipt", function(receipt) {
+            $("#txStatus").text("Successfully created " + name + "!");
+            getZombiesByOwner(userAccount).then(displayZombies);
+        })
+        .on("error", function(error) {
+            $("#txStatus").text(error);
+        });
+}
+
+function feedOnKitty(zombieId, kittyId) {
+    $("#txStatus").text("Eating a kitty. This may take a while...");
+    return cryptoZombies.methods.feedOnKitty(zombieId, kittyId)
+        .send({ from: userAccount })
+        .on("receipt", function(receipt) {
+            $("#txStatus").text("Ate a kitty and spawned a new Zombie!");
+            getZombiesByOwner(userAccount).then(displayZombies);
+        })
+        .on("error", function(error) {
+            $("#txStatus").text(error);
+        });
+}
+
+function levelUp(zombieId) {
+    $("#txStatus").text("Leveling up your zombie...");
+    return cryptoZombies.methods.levelUp(zombieId)
+        // 注意，send时是可以标gas价格的……
+        .send({ from: userAccount, value: web3.utils.toWei("0.001", "ether") })
+        .on("receipt", function(receipt) {
+            $("#txStatus").text("Power overwhelming! Zombie successfully leveled up");
+        })
+        .on("error", function(error) {
+            $("#txStatus").text(error);
+        });
+}
+
+function getZombieDetails(id) {
+    return cryptoZombies.methods.zombies(id).call()
+}
+
+function zombieToOwner(id) {
+    return cryptoZombies.methods.zombieToOwner(id).call()
+}
+
+function getZombiesByOwner(owner) {
+    return cryptoZombies.methods.getZombiesByOwner(owner).call()
+}
+
+window.addEventListener('load', function() {
+
+    // 检查浏览器使用使用了 Mist/Metamask 插件
+    if (typeof web3 !== 'undefined') {
+        // 使用 Mist/MetaMask's 提供的infura节点
+        web3js = new Web3(web3.currentProvider);
+    } else {
+        // 建议用户安装Metamask或者自定义行为
+    }
+
+    // 启动App
+    startApp()
+
+})
+</script>
+</body>
+</html>
